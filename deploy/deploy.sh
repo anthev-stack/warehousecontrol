@@ -23,6 +23,6 @@ fi
 npm run build
 npm run db:push
 
-sudo -u www-data env HOME="$APP_DIR" pm2 restart warehousecontrol
+sudo -u www-data env HOME="$APP_DIR" PM2_HOME="$APP_DIR/.pm2" pm2 restart warehousecontrol
 
 echo "Deployed $(git rev-parse --short HEAD) on port ${PORT}"

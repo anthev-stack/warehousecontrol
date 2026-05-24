@@ -160,22 +160,31 @@ sed "s/\${PORT}/${PORT}/g" deploy/ecosystem.config.cjs.template > ecosystem.conf
 
 echo "==> Installing dependencies and building..."
 install_node_deps
-npm run build
 npm run db:push
 npm run db:seed
+npm run build
 
 chown -R "$APP_USER:$APP_USER" "$APP_DIR"
 
-echo "==> Starting warehousecontrol with PM2 (other PM2 apps are not modified)..."
-sudo -u "$APP_USER" env HOME="$APP_DIR" pm2 delete warehousecontrol 2>/dev/null || true
-sudo -u "$APP_USER" env HOME="$APP_DIR" pm2 start ecosystem.config.cjs
-sudo -u "$APP_USER" env HOME="$APP_DIR" pm2 save
+pm2_as_user() {
+  sudo -u "$APP_USER" env HOME="$APP_DIR" PM2_HOME="$APP_DIR/.pm2" pm2 "$@"
+}
 
-if ! systemctl list-units --type=service 2>/dev/null | grep -q 'pm2-'; then
-  echo "==> Configuring PM2 to start on boot (first PM2 app on this server)..."
-  env PATH="$PATH:/usr/bin" pm2 startup systemd -u "$APP_USER" --hp "$APP_DIR" | tail -1 | bash || true
+echo "==> Starting warehousecontrol with PM2 (other PM2 apps are not modified)..."
+pm2_as_user delete warehousecontrol 2>/dev/null || true
+pm2_as_user start ecosystem.config.cjs
+pm2_as_user save
+
+if ! systemctl is-enabled "pm2-${APP_USER}" >/dev/null 2>&1; then
+  echo "==> Configuring PM2 to start on boot..."
+  STARTUP_CMD=$(env PATH="$PATH:/usr/bin" pm2 startup systemd -u "$APP_USER" --hp "$APP_DIR" 2>&1 | grep "^sudo env" || true)
+  if [ -n "$STARTUP_CMD" ]; then
+    eval "$STARTUP_CMD"
+  else
+    echo "WARN: Could not configure PM2 startup automatically. Run: pm2 startup"
+  fi
 else
-  echo "==> PM2 startup already configured on this server — skipped."
+  echo "==> PM2 startup already configured for ${APP_USER} — skipped."
 fi
 
 LISTENER_80="$(port_80_listener)"

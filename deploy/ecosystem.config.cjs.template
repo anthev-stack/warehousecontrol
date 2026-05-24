@@ -5,9 +5,12 @@ module.exports = {
       cwd: "/var/www/warehousecontrol",
       script: "node_modules/next/dist/bin/next",
       args: "start -p ${PORT}",
+      exec_mode: "fork",
       env: {
         NODE_ENV: "production",
         PORT: "${PORT}",
+        HOME: "/var/www/warehousecontrol",
+        PM2_HOME: "/var/www/warehousecontrol/.pm2",
       },
       instances: 1,
       autorestart: true,
