@@ -1,0 +1,307 @@
+// Manufacturing ERP — local SQLite for development
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+enum Role {
+  USER
+  PURCHASING
+  PRODUCTION
+  ADMIN
+}
+
+enum WorkOrderStatus {
+  DRAFT
+  RELEASED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  DONE
+}
+
+enum POStatus {
+  DRAFT
+  SUBMITTED
+  PARTIALLY_RECEIVED
+  RECEIVED
+  CANCELLED
+}
+
+enum StockMoveType {
+  RECEIPT
+  WO_ISSUE
+  WO_RECEIPT_FG
+  ADJUSTMENT
+  SALE_SHIP
+}
+
+enum SalesOrderStatus {
+  DRAFT
+  CONFIRMED
+  SHIPPED
+  CANCELLED
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         Role     @default(USER)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  timeEntries    TimeEntry[]
+  assignedTasks  WorkOrderTask[] @relation("TaskAssignee")
+  workOrdersCreated WorkOrder[]  @relation("WOCreatedBy")
+  purchaseOrdersCreated PurchaseOrder[] @relation("POCreatedBy")
+  receiptsReceived GoodsReceipt[] @relation("ReceiptReceiver")
+  stockMovements StockMovement[]
+}
+
+model Vendor {
+  id              String   @id @default(cuid())
+  name            String
+  email           String?
+  phone           String?
+  defaultLeadDays Int      @default(7)
+  notes           String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  partVendors    PartVendor[]
+  purchaseOrders PurchaseOrder[]
+  defaultParts   Part[]           @relation("DefaultVendorParts")
+}
+
+model Part {
+  id               String   @id @default(cuid())
+  sku              String   @unique
+  name             String
+  description      String?
+  unit             String   @default("ea")
+  onHand           Float    @default(0)
+  reorderPoint     Float    @default(0)
+  reorderQty       Float    @default(0)
+  avgLandedCost    Float    @default(0)
+  isPurchased      Boolean  @default(true)
+  isManufactured   Boolean  @default(false)
+  isAssembly       Boolean  @default(false)
+  active           Boolean  @default(true)
+  defaultVendorId  String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  defaultVendor        Vendor?             @relation("DefaultVendorParts", fields: [defaultVendorId], references: [id])
+  partVendors          PartVendor[]
+  bomAsFinished        Bom[]
+  bomLines             BomLine[]
+  workOrderMaterials   WorkOrderMaterial[]
+  purchaseOrderLines   PurchaseOrderLine[]
+  salesOrderLines      SalesOrderLine[]
+  stockMovements       StockMovement[]
+}
+
+model PartVendor {
+  id               String  @id @default(cuid())
+  partId           String
+  vendorId         String
+  vendorPartNumber String?
+  unitCost         Float   @default(0)
+  leadTimeDays     Int?
+
+  part   Part   @relation(fields: [partId], references: [id], onDelete: Cascade)
+  vendor Vendor @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+
+  @@unique([partId, vendorId])
+}
+
+model Bom {
+  id                 String   @id @default(cuid())
+  name               String
+  revision           String   @default("A")
+  isConfigurable     Boolean  @default(false)
+  active             Boolean  @default(true)
+  finishedGoodPartId String
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  finishedGood Part      @relation(fields: [finishedGoodPartId], references: [id])
+  lines        BomLine[]
+  workOrders   WorkOrder[]
+}
+
+model BomLine {
+  id              String  @id @default(cuid())
+  bomId           String
+  componentPartId String
+  qtyPer          Float
+  isOptional      Boolean @default(false)
+
+  bom       Bom  @relation(fields: [bomId], references: [id], onDelete: Cascade)
+  component Part @relation(fields: [componentPartId], references: [id])
+
+  @@index([bomId])
+}
+
+model WorkOrder {
+  id          String            @id @default(cuid())
+  number      String            @unique
+  bomId       String
+  qty         Float
+  status      WorkOrderStatus   @default(DRAFT)
+  notes       String?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  releasedAt  DateTime?
+  completedAt DateTime?
+  createdById String?
+
+  bom         Bom                 @relation(fields: [bomId], references: [id])
+  createdBy   User?               @relation("WOCreatedBy", fields: [createdById], references: [id])
+  materials   WorkOrderMaterial[]
+  tasks       WorkOrderTask[]
+  timeEntries TimeEntry[]
+}
+
+model WorkOrderMaterial {
+  id          String  @id @default(cuid())
+  workOrderId String
+  partId      String
+  qtyRequired Float
+  qtyIssued   Float   @default(0)
+
+  workOrder WorkOrder @relation(fields: [workOrderId], references: [id], onDelete: Cascade)
+  part      Part      @relation(fields: [partId], references: [id])
+
+  @@index([workOrderId])
+}
+
+model WorkOrderTask {
+  id           String     @id @default(cuid())
+  workOrderId  String
+  title        String
+  description  String?
+  sortOrder    Int        @default(0)
+  status       TaskStatus @default(TODO)
+  assigneeId   String?
+
+  workOrder WorkOrder @relation(fields: [workOrderId], references: [id], onDelete: Cascade)
+  assignee  User?     @relation("TaskAssignee", fields: [assigneeId], references: [id])
+}
+
+model TimeEntry {
+  id          String   @id @default(cuid())
+  userId      String
+  workOrderId String?
+  description String
+  minutes     Int
+  laborRate   Float    @default(0)
+  workDate    DateTime @default(now())
+  createdAt   DateTime @default(now())
+
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workOrder WorkOrder? @relation(fields: [workOrderId], references: [id])
+}
+
+model PurchaseOrder {
+  id           String    @id @default(cuid())
+  number       String    @unique
+  vendorId     String
+  status       POStatus  @default(DRAFT)
+  expectedDate DateTime?
+  notes        String?
+  /// Purchasing approval before submit (optional workflow)
+  needsApproval Boolean  @default(false)
+  approvedAt    DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  createdById   String?
+
+  vendor      Vendor              @relation(fields: [vendorId], references: [id])
+  createdBy   User?               @relation("POCreatedBy", fields: [createdById], references: [id])
+  lines       PurchaseOrderLine[]
+  receipts    GoodsReceipt[]
+}
+
+model PurchaseOrderLine {
+  id              String @id @default(cuid())
+  purchaseOrderId String
+  partId          String
+  qtyOrdered      Float
+  unitCost        Float
+  qtyReceived     Float  @default(0)
+
+  purchaseOrder PurchaseOrder      @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  part          Part               @relation(fields: [partId], references: [id])
+  receiptLines  GoodsReceiptLine[]
+}
+
+model GoodsReceipt {
+  id              String   @id @default(cuid())
+  purchaseOrderId String
+  receivedAt      DateTime @default(now())
+  note            String?
+  receivedById    String?
+
+  purchaseOrder PurchaseOrder      @relation(fields: [purchaseOrderId], references: [id])
+  receivedBy    User?              @relation("ReceiptReceiver", fields: [receivedById], references: [id])
+  lines         GoodsReceiptLine[]
+}
+
+model GoodsReceiptLine {
+  id                  String @id @default(cuid())
+  goodsReceiptId      String
+  purchaseOrderLineId String
+  qty                 Float
+
+  goodsReceipt      GoodsReceipt      @relation(fields: [goodsReceiptId], references: [id], onDelete: Cascade)
+  purchaseOrderLine PurchaseOrderLine @relation(fields: [purchaseOrderLineId], references: [id])
+}
+
+model StockMovement {
+  id          String        @id @default(cuid())
+  partId      String
+  qtyDelta    Float
+  type        StockMoveType
+  reference   String?
+  note        String?
+  createdAt   DateTime      @default(now())
+  createdById String?
+
+  part      Part  @relation(fields: [partId], references: [id])
+  createdBy User? @relation(fields: [createdById], references: [id])
+}
+
+model SalesOrder {
+  id           String            @id @default(cuid())
+  number       String            @unique
+  customerName String
+  status       SalesOrderStatus @default(DRAFT)
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  lines SalesOrderLine[]
+}
+
+model SalesOrderLine {
+  id           String @id @default(cuid())
+  salesOrderId String
+  partId       String
+  qty          Float
+  unitPrice    Float  @default(0)
+
+  salesOrder SalesOrder @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  part       Part       @relation(fields: [partId], references: [id])
+}
