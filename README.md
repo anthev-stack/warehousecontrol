@@ -23,23 +23,37 @@ Demo logins (password `demo123`):
 
 ## Production (Vultr + warehousecontrol.cc)
 
-1. Create a Vultr Ubuntu 22.04/24.04 server.
-2. Point DNS for `warehousecontrol.cc` and `www.warehousecontrol.cc` to the server IP (A records).
-3. SSH into the server and run:
+Designed to run **alongside other apps** on the same server:
+
+- Does **not** remove or replace existing nginx sites
+- Uses its **own port** (3001+ if 3000 is taken)
+- Adds only a **warehousecontrol.cc** nginx vhost
+- PM2 process name: `warehousecontrol` (won't touch other PM2 apps)
+
+### Setup
+
+1. Point DNS for `warehousecontrol.cc` and `www.warehousecontrol.cc` to your Vultr server IP.
+2. SSH in and run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/anthev-stack/warehousecontrol/main/deploy/setup-vultr.sh | bash
+git clone https://github.com/anthev-stack/warehousecontrol.git /var/www/warehousecontrol
+cd /var/www/warehousecontrol
+sudo bash deploy/setup-vultr.sh
 ```
 
-Or clone first, then run `sudo bash deploy/setup-vultr.sh`.
+Optional — force a specific port if you know what's free:
 
-4. After DNS propagates, enable HTTPS:
+```bash
+sudo WAREHOUSECONTROL_PORT=3002 bash deploy/setup-vultr.sh
+```
+
+3. After DNS propagates, enable HTTPS for this domain only:
 
 ```bash
 sudo certbot --nginx -d warehousecontrol.cc -d www.warehousecontrol.cc
 ```
 
-5. Future updates:
+4. Future updates:
 
 ```bash
 sudo bash /var/www/warehousecontrol/deploy/deploy.sh
@@ -52,7 +66,7 @@ sudo bash /var/www/warehousecontrol/deploy/deploy.sh
 | `DATABASE_URL` | SQLite path, e.g. `file:/var/www/warehousecontrol/data/prod.db` |
 | `AUTH_SECRET` | Long random string for session JWT signing |
 | `NODE_ENV` | `production` |
-| `PORT` | `3000` (nginx proxies to this) |
+| `PORT` | Local port nginx proxies to (auto-picked, usually 3001) |
 
 ## Repository
 

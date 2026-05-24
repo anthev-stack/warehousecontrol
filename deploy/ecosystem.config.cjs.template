@@ -4,10 +4,10 @@ module.exports = {
       name: "warehousecontrol",
       cwd: "/var/www/warehousecontrol",
       script: "node_modules/next/dist/bin/next",
-      args: "start -p 3001",
+      args: "start -p ${PORT}",
       env: {
         NODE_ENV: "production",
-        PORT: "3001",
+        PORT: "${PORT}",
       },
       instances: 1,
       autorestart: true,

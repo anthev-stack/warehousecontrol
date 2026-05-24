@@ -1,15 +1,24 @@
 #!/bin/bash
-# Deploy updates after the initial setup-vultr.sh run.
+# Deploy updates. Safe on servers running other apps — only restarts warehousecontrol.
 set -euo pipefail
 
-APP_DIR="/var/www/warehousecontrol"
+APP_DIR="${APP_DIR:-/var/www/warehousecontrol}"
 cd "$APP_DIR"
 
 git pull origin main
+
+PORT="$(grep '^PORT=' .env | cut -d= -f2 | tr -d '"')"
+if [ -z "$PORT" ]; then
+  echo "ERROR: PORT not set in .env" >&2
+  exit 1
+fi
+
+sed "s/\${PORT}/${PORT}/g" deploy/ecosystem.config.cjs.template > ecosystem.config.cjs
+
 npm ci
 npm run build
 npm run db:push
 
 sudo -u www-data env HOME="$APP_DIR" pm2 restart warehousecontrol
 
-echo "Deployed $(git rev-parse --short HEAD)"
+echo "Deployed $(git rev-parse --short HEAD) on port ${PORT}"
