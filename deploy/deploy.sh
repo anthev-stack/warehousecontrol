@@ -15,7 +15,11 @@ fi
 
 sed "s/\${PORT}/${PORT}/g" deploy/ecosystem.config.cjs.template > ecosystem.config.cjs
 
-npm ci
+if [ -f package-lock.json ]; then
+  npm ci || npm install
+else
+  npm install
+fi
 npm run build
 npm run db:push
 

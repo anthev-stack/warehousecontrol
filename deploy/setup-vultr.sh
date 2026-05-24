@@ -1,8 +1,8 @@
 #!/bin/bash
-# First-time setup on a server that may already run other web apps.
-# - Does NOT remove or replace existing nginx sites
+# First-time setup on a server that may already run other web apps (Caddy or nginx).
+# - Does NOT remove or replace existing sites
 # - Picks a free local port (3001+ if 3000 is taken)
-# - Adds only the warehousecontrol.cc nginx vhost
+# - Adds only warehousecontrol.cc reverse proxy (Caddy preferred if port 80 is in use)
 #
 # Optional env overrides:
 #   WAREHOUSECONTROL_PORT=3001
@@ -21,6 +21,14 @@ port_in_use() {
     ss -tln | grep -q ":${port} "
   else
     netstat -tln 2>/dev/null | grep -q ":${port} "
+  fi
+}
+
+port_80_listener() {
+  if command -v ss >/dev/null 2>&1; then
+    ss -tlnp 2>/dev/null | grep ':80 ' | head -1 || true
+  else
+    netstat -tlnp 2>/dev/null | grep ':80 ' | head -1 || true
   fi
 }
 
@@ -45,15 +53,54 @@ pick_port() {
   exit 1
 }
 
-echo "==> Installing build tools (nginx/git left as-is if already installed)..."
+install_node_deps() {
+  if [ -f package-lock.json ]; then
+    if ! npm ci; then
+      echo "WARN: npm ci failed (lock file out of sync). Falling back to npm install..."
+      npm install
+    fi
+  else
+    npm install
+  fi
+}
+
+configure_caddy() {
+  local port="$1"
+  local snippet="/etc/caddy/Caddyfile.d/warehousecontrol.caddy"
+  local main="/etc/caddy/Caddyfile"
+
+  mkdir -p /etc/caddy/Caddyfile.d
+  sed "s/__PORT__/${port}/g" deploy/caddy.conf.template > "$snippet"
+
+  if [ -f "$main" ] && ! grep -q 'Caddyfile.d' "$main"; then
+    echo "" >> "$main"
+    echo "import /etc/caddy/Caddyfile.d/*.caddy" >> "$main"
+  fi
+
+  if command -v caddy >/dev/null 2>&1; then
+    caddy validate --config "$main"
+    systemctl reload caddy || systemctl restart caddy
+    echo "==> Caddy configured for ${DOMAIN} -> 127.0.0.1:${port} (HTTPS automatic)"
+  else
+    echo "ERROR: Caddy is not installed but port 80 appears to be in use." >&2
+    echo "Install Caddy or free port 80 for nginx, then re-run this script." >&2
+    exit 1
+  fi
+}
+
+configure_nginx() {
+  local port="$1"
+  sed "s/__PORT__/${port}/g" deploy/nginx.conf.template > /etc/nginx/sites-available/warehousecontrol
+  ln -sf /etc/nginx/sites-available/warehousecontrol /etc/nginx/sites-enabled/warehousecontrol
+  nginx -t
+  systemctl reload nginx || systemctl start nginx
+  echo "==> nginx configured for ${DOMAIN} -> 127.0.0.1:${port}"
+  echo "    Enable HTTPS: sudo certbot --nginx -d ${DOMAIN} -d www.${DOMAIN}"
+}
+
+echo "==> Installing build tools..."
 apt-get update
 apt-get install -y curl git build-essential
-if ! command -v nginx >/dev/null 2>&1; then
-  apt-get install -y nginx
-fi
-if ! command -v certbot >/dev/null 2>&1; then
-  apt-get install -y certbot python3-certbot-nginx
-fi
 
 if ! command -v node >/dev/null 2>&1; then
   curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash -
@@ -78,10 +125,19 @@ cd "$APP_DIR"
 PORT="$(pick_port)"
 echo "==> Using port ${PORT} (existing apps on other ports are untouched)."
 
+if [ -n "${WAREHOUSECONTROL_PORT:-}" ]; then
+  PORT="$WAREHOUSECONTROL_PORT"
+  echo "==> WAREHOUSECONTROL_PORT override: ${PORT}"
+fi
+
 if [ -f .env ] && grep -q '^PORT=' .env; then
-  PORT="$(grep '^PORT=' .env | cut -d= -f2 | tr -d '"')"
-  echo "==> Reusing PORT=${PORT} from existing .env"
-else
+  if [ -z "${WAREHOUSECONTROL_PORT:-}" ]; then
+    PORT="$(grep '^PORT=' .env | cut -d= -f2 | tr -d '"')"
+    echo "==> Reusing PORT=${PORT} from existing .env"
+  fi
+fi
+
+if [ ! -f .env ]; then
   AUTH_SECRET=$(openssl rand -base64 48 | tr -d '/+=' | head -c 48)
   mkdir -p data
   cat > .env <<EOF
@@ -91,12 +147,19 @@ NODE_ENV=production
 PORT=${PORT}
 EOF
   echo "Created .env with PORT=${PORT} and a random AUTH_SECRET."
+elif [ -n "${WAREHOUSECONTROL_PORT:-}" ]; then
+  if grep -q '^PORT=' .env; then
+    sed -i "s/^PORT=.*/PORT=${PORT}/" .env
+  else
+    echo "PORT=${PORT}" >> .env
+  fi
+  echo "Updated .env PORT=${PORT}"
 fi
 
 sed "s/\${PORT}/${PORT}/g" deploy/ecosystem.config.cjs.template > ecosystem.config.cjs
 
 echo "==> Installing dependencies and building..."
-npm ci
+install_node_deps
 npm run build
 npm run db:push
 npm run db:seed
@@ -115,19 +178,43 @@ else
   echo "==> PM2 startup already configured on this server — skipped."
 fi
 
-echo "==> Adding nginx vhost for ${DOMAIN} only (other sites unchanged)..."
-sed "s/__PORT__/${PORT}/g" deploy/nginx.conf.template > /etc/nginx/sites-available/warehousecontrol
-ln -sf /etc/nginx/sites-available/warehousecontrol /etc/nginx/sites-enabled/warehousecontrol
-nginx -t
-systemctl reload nginx
+LISTENER_80="$(port_80_listener)"
+USE_CADDY=0
+if command -v caddy >/dev/null 2>&1; then
+  USE_CADDY=1
+elif echo "$LISTENER_80" | grep -qi caddy; then
+  USE_CADDY=1
+elif port_in_use 80 && ! command -v nginx >/dev/null 2>&1; then
+  echo "==> Port 80 in use by another process (likely Caddy). Will configure Caddy if available."
+  USE_CADDY=1
+fi
+
+echo "==> Configuring reverse proxy for ${DOMAIN}..."
+if [ "$USE_CADDY" -eq 1 ]; then
+  if ! command -v caddy >/dev/null 2>&1; then
+    echo "==> Installing Caddy..."
+    apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg 2>/dev/null || true
+    if [ ! -f /usr/share/keyrings/caddy-stable-archive-keyring.gpg ]; then
+      apt-get install -y caddy || true
+    fi
+  fi
+  if command -v caddy >/dev/null 2>&1; then
+    configure_caddy "$PORT"
+  else
+    echo "WARN: Could not configure Caddy. Add this block to your existing Caddyfile manually:"
+    sed "s/__PORT__/${PORT}/g" deploy/caddy.conf.template
+  fi
+else
+  if ! command -v nginx >/dev/null 2>&1; then
+    apt-get install -y nginx
+  fi
+  configure_nginx "$PORT"
+fi
 
 echo ""
 echo "Done."
-echo "  App port:  ${PORT} (localhost only — nginx proxies ${DOMAIN} to this port)"
+echo "  App port:  ${PORT}"
 echo "  App dir:   ${APP_DIR}"
-echo ""
-echo "Next steps:"
-echo "  1. Point ${DOMAIN} and www.${DOMAIN} A records to this server."
-echo "  2. Enable HTTPS (does not affect other domains on this server):"
-echo "     sudo certbot --nginx -d ${DOMAIN} -d www.${DOMAIN}"
+echo "  Domain:    https://${DOMAIN} (once DNS points here; Caddy provisions TLS automatically)"
 echo ""

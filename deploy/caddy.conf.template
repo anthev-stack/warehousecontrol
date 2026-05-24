@@ -1,0 +1,5 @@
+# Added by deploy/setup-vultr.sh — do not edit by hand.
+# Caddy handles HTTPS automatically for this domain.
+warehousecontrol.cc, www.warehousecontrol.cc {
+	reverse_proxy 127.0.0.1:__PORT__
+}
